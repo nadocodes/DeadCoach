@@ -64,6 +64,14 @@ def main():
         if f.endswith(".webp"):
             os.remove(os.path.join(art_dir, f))
 
+    # Build-up recipes: which cheaper items an item is made from, and what each one builds into.
+    name_by_class = {i.get("class_name"): i["name"] for i in items if i.get("class_name")}
+    components = {i["name"]: [name_by_class[c] for c in (i.get("component_items") or []) if c in name_by_class] for i in shop}
+    builds_into = {}
+    for parent, parts in components.items():
+        for part in parts:
+            builds_into.setdefault(part, []).append(parent)
+
     site, embedded = [], []
     for i, art in zip(shop, arts):
         base = {
@@ -74,6 +82,8 @@ def main():
             "cost": i.get("cost"),
             "active": bool(i.get("is_active_item")),
             "desc": short_desc(i),
+            "components": components.get(i["name"], []),
+            "builds_into": sorted(builds_into.get(i["name"], [])),
         }
         path = None
         if art:

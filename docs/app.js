@@ -11,7 +11,7 @@ const MODES = [["ranked", "Ranked"], ["standard", "Standard"], ["streetbrawl", "
 const MODE_LABEL = Object.fromEntries(MODES);
 const SLOT_ORDER = ["weapon", "vitality", "spirit"];
 const TIER_COST = { 1: 800, 2: 1600, 3: 3200, 4: 6400, 5: 9999 };
-const CACHE_VERSION = "v2";
+const CACHE_VERSION = "v3";
 const CLAUDE_MODELS = [["claude-opus-5-5", "Opus 5.5 (best coaching)"], ["claude-sonnet-5-5", "Sonnet 5.5 (about half the cost)"]];
 const KEY_PAGE = "https://platform.claude.com/settings/keys";
 const KEY_PATTERN = /sk-ant-[A-Za-z0-9_-]{20,}/;
@@ -132,7 +132,7 @@ async function api(path, params = {}, signal) {
 
 // ---------------------------------------------------------------- static data
 async function loadStatic() {
-  const [items, heroes] = await Promise.all([fetch("items.json?v=3").then(r => r.json()), fetch("heroes.json?v=3").then(r => r.json())]);
+  const [items, heroes] = await Promise.all([fetch("items.json?v=6").then(r => r.json()), fetch("heroes.json?v=6").then(r => r.json())]);
   for (const i of items) { state.items.set(i.name.toLowerCase(), i); state.itemsById.set(i.id, i); }
   for (const h of heroes) state.heroes.set(h.id, h);
 }
@@ -341,7 +341,7 @@ function buildGame(acct, md, summary) {
 }
 
 async function loadMeta(g) {
-  const key = `dc:meta:${g.hero_id}:${g.mode === "streetbrawl" ? "sb" : "n"}:${g.enemy_ids.slice().sort().join("-")}`;
+  const key = `dc:meta2:${g.hero_id}:${g.mode === "streetbrawl" ? "sb" : "n"}:${g.enemy_ids.slice().sort().join("-")}`;
   const cached = store.get(key);
   if (cached && Date.now() - cached.at < 24 * 3600 * 1000) return cached.rows;
   const raw = await api("/v1/analytics/item-stats", { hero_ids: g.hero_id, enemy_hero_ids: g.enemy_ids.join(","),
@@ -349,7 +349,8 @@ async function loadMeta(g) {
   const owned = new Set(g.build.map(b => b.item));
   let rows = (raw || []).map(r => { const it = state.itemsById.get(r.item_id); return it && r.matches ? {
     item: it.name, slot: it.slot, tier: it.tier, matches: r.matches, wins: r.wins,
-    win_rate: +(100 * r.wins / r.matches).toFixed(1), avg_buy_min: +((r.avg_buy_time_s || 0) / 60).toFixed(1) } : null; }).filter(Boolean);
+    win_rate: +(100 * r.wins / r.matches).toFixed(1), avg_buy_min: +((r.avg_buy_time_s || 0) / 60).toFixed(1),
+    sell_min: r.avg_sell_time_s ? +(r.avg_sell_time_s / 60).toFixed(1) : null } : null; }).filter(Boolean);
   rows.sort((a, b) => b.matches - a.matches);
   rows = rows.slice(0, 45).concat(rows.slice(45).filter(r => owned.has(r.item)));
   store.set(key, { at: Date.now(), rows });
@@ -535,16 +536,52 @@ function dataCoach(g, meta) {
     const c = popular.shift(); taken.add(c.item);
     swaps.push({ out: null, in: c.item, by_min: Math.round(c.avg_buy_min), why: `${c.win_rate}% win rate for ${g.hero} vs this lineup across ${c.matches.toLocaleString()} games.` });
   }
-  // Final build: your finished items, swaps applied, filled up to 12 with strong picks for your role, in meta buy order.
-  let build = finals.map(b => b.item).filter(n => !swaps.some(s => s.out === n));
-  swaps.forEach(s => build.push(s.in));
-  const fill = popular.filter(r => !build.includes(r.item));
-  while (build.length < 12 && fill.length) build.push(fill.shift().item);
-  build = build.slice(0, 16).map(n => {
+  // Build path: early 800-soul laning items, the components that build into your core, then the core itself.
+  let core = finals.map(b => b.item).filter(n => !swaps.some(sw => sw.out === n));
+  swaps.forEach(sw => { if (!core.includes(sw.in)) core.push(sw.in); });
+  const fill = popular.filter(r => !core.includes(r.item));
+  while (core.length < 12 && fill.length) core.push(fill.shift().item);
+  core = core.slice(0, 14);
+  const entries = new Map();
+  const add = (n, e) => { if (!entries.has(n)) entries.set(n, e); };
+  for (const n of core) {
     const r = rows.get(n), mine = g.build.find(b => b.item === n);
-    return { item: n, by_min: Math.round(r?.avg_buy_min || mine?.bought_min || 0),
-      why: r ? `${r.win_rate}% win rate, usually bought around ${Math.round(r.avg_buy_min)}m` : "Kept from your build" };
-  }).sort((a, b) => a.by_min - b.by_min);
+    add(n, { item: n, by_min: Math.round(r?.avg_buy_min ?? mine?.bought_min ?? 0),
+      why: r ? `${r.win_rate}% win rate vs this lineup, usually bought around ${Math.round(r.avg_buy_min)}m` : "Kept from your build" });
+  }
+  for (const n of core) {            // components go in before the item they build into
+    const parent = entries.get(n);
+    for (const part of findItem(n)?.components || []) {
+      if (entries.has(part)) continue;
+      const pm = rows.get(part)?.avg_buy_min;
+      add(part, { item: part, into: n, by_min: Math.max(1, Math.round(Math.min(pm ?? parent.by_min - 3, parent.by_min - 2))), why: `Buy early, then upgrade it into ${n}` });
+    }
+  }
+  const tierOf = n => findItem(n)?.tier;
+  const notBad = r => !r || r.win_rate > base - 1.5;
+  let need = Math.max(0, 4 - [...entries.values()].filter(e => tierOf(e.item) === 1).length);
+  for (const b of g.build.filter(b => b.tier === 1 && b.bought_min <= 10)) {      // your own laning buys first
+    if (!need) break;
+    if (entries.has(b.item) || !notBad(rows.get(b.item))) continue;
+    const r = rows.get(b.item);
+    add(b.item, { item: b.item, by_min: Math.max(1, Math.round(b.bought_min)), why: r ? `Good laning buy: ${r.win_rate}% win rate vs this lineup` : "Your laning buy" });
+    need--;
+  }
+  const earlyPicks = (meta || []).filter(r => r.tier === 1 && solid(r) && r.avg_buy_min <= 10 && !entries.has(r.item) && r.win_rate >= base - 0.5)
+    .sort((a, b) => (roleSlots.indexOf(a.slot) - roleSlots.indexOf(b.slot)) * 0.5 + (score(b) - score(a)));
+  for (const r of earlyPicks) {
+    if (!need) break;
+    add(r.item, { item: r.item, by_min: Math.max(1, Math.round(r.avg_buy_min)), why: `${r.win_rate}% win rate as an early buy vs this lineup` });
+    need--;
+  }
+  for (const e of entries.values()) {   // 800-soul items: upgrade into something in the path, or sell when players usually do
+    if (tierOf(e.item) !== 1 || e.into) continue;
+    const into = (findItem(e.item)?.builds_into || []).find(x => entries.has(x));
+    if (into) { e.into = into; e.why = `Buy early, then upgrade it into ${into}`; continue; }
+    const sell = rows.get(e.item)?.sell_min ?? g.build.find(b => b.item === e.item)?.sold_min;
+    if (sell && sell > e.by_min + 3) e.sell_min = Math.round(sell);
+  }
+  const build = [...entries.values()].sort((a, b) => a.by_min - b.by_min).slice(0, 20);
 
   const br = g.grade.breakdown, weighted = Object.entries(br).filter(([, r]) => r.weight);
   const bestM = weighted.slice().sort((a, b) => a[1].rank - b[1].rank || b[1].weight - a[1].weight)[0];
@@ -616,8 +653,10 @@ Build in buy order: ${build}
 ${g.hero} item win rates vs this enemy lineup (win%, avg buy minute, games): ${meta}
 
 Reply with ONE \`\`\`json code block and nothing else. Don't make an artifact or file. Shape:
-{"match_id": ${g.match_id}, "headline": "max 22 words", "did_well": [{"title": "max 7 words", "detail": "1-2 sentences", "items": []}], "biggest_miss": {"title": "", "detail": "2-3 sentences on these enemies", "items": []}, "do_instead": [{"title": "", "detail": "cite numbers", "items": []}], "macro": null or {"title": "", "detail": ""}, "swaps": [{"out": "item they bought or null", "in": "item", "by_min": 14, "why": "max 16 words"}], "final_build": [{"item": "", "by_min": 6, "why": "max 12 words"}]}
-did_well 1-2, do_instead 1-3, swaps 2-4, final_build 10-16 items in buy order: a corrected version of their build for this hero, role and lineup. Use exact item names from:
+{"match_id": ${g.match_id}, "headline": "max 22 words", "did_well": [{"title": "max 7 words", "detail": "1-2 sentences", "items": []}], "biggest_miss": {"title": "", "detail": "2-3 sentences on these enemies", "items": []}, "do_instead": [{"title": "", "detail": "cite numbers", "items": []}], "macro": null or {"title": "", "detail": ""}, "swaps": [{"out": "item they bought or null", "in": "item", "by_min": 14, "why": "max 16 words"}], "final_build": [{"item": "", "by_min": 2, "sell_min": 18 or null, "into": "item it upgrades into, or null", "why": "max 12 words"}]}
+did_well 1-2, do_instead 1-3, swaps 2-4. final_build is the whole build path from the first shop visit, 14-20 items in buy order: 3-4 early 800-soul laning items (sell_min when they'd normally be sold), the cheaper components bought before the items they upgrade into (set "into"), then the core and late items. It's a corrected version of their build for this hero, role and lineup.
+Build-up recipes (component > item): ${[...state.items.values()].filter(i => i.components?.length).map(i => `${i.components.join(" + ")} > ${i.name}`).join("; ")}
+Use exact item names from:
 ${names}`;
 }
 
@@ -632,7 +671,8 @@ function cleanPlan(p) {
     do_instead: arr(p.do_instead).map(fixCard).filter(Boolean).slice(0, 3),
     macro: fixCard(p.macro),
     swaps: arr(p.swaps).filter(s => s && known(s.in)).map(s => ({ out: s.out && known(s.out) ? canon(s.out) : null, in: canon(s.in), by_min: Number(s.by_min) || null, why: String(s.why || "") })).slice(0, 4),
-    final_build: arr(p.final_build).filter(f => f && known(f.item)).map(f => ({ item: canon(f.item), by_min: Number(f.by_min) || null, why: String(f.why || "") })).slice(0, 16),
+    final_build: arr(p.final_build).filter(f => f && known(f.item)).map(f => ({ item: canon(f.item), by_min: Number(f.by_min) || null,
+      sell_min: Number(f.sell_min) || null, into: f.into && known(f.into) ? canon(f.into) : null, why: String(f.why || "") })).slice(0, 22),
   };
   return plan.biggest_miss || plan.final_build.length ? plan : null;
 }
@@ -858,7 +898,16 @@ function renderPlan(plan) {
     ${plan.final_build?.length ? `<h4 class="cv-sub">Build path</h4>
       <div class="path">
         <span class="who">You</span><div class="strip">${m.build.map(b => `<div class="slotc ${b.sold_min != null ? "sold" : ""}"><span class="m">${b.bought_min.toFixed(0)}m</span>${tile(b.item, { size: "sm", state: inFinal(b.item) ? "pick" : "" })}</div>`).join("")}</div>
-        <span class="who coachw">Coach</span><div class="strip">${plan.final_build.map((f, i) => `<div class="slotc" title="${esc(f.why || "")}"><span class="m">${f.by_min != null ? Number(f.by_min).toFixed(0) + "m" : ""}</span>${tile(f.item, { size: "sm", order: i + 1, state: mine.includes(f.item.toLowerCase()) ? "mine" : "" })}</div>`).join("")}</div>
+        <span class="who coachw">Coach</span><div class="strip">${(() => {
+          let lastPhase = null;
+          return plan.final_build.map((f, i) => {
+            const m = Number(f.by_min) || 0, phase = m < 10 ? "Laning" : m < 25 ? "Mid game" : "Late game";
+            const divider = phase !== lastPhase ? `<div class="phase"><span>${phase}</span></div>` : "";
+            lastPhase = phase;
+            const note = f.into ? `→ ${esc(f.into)}` : f.sell_min ? `sell ${Math.round(f.sell_min)}m` : "";
+            return `${divider}<div class="slotc${f.into ? " part" : ""}" title="${esc(f.why || "")}"><span class="m">${f.by_min != null ? m.toFixed(0) + "m" : ""}</span>${tile(f.item, { size: "sm", order: i + 1, state: mine.includes(f.item.toLowerCase()) ? "mine" : "" })}${note ? `<span class="note">${note}</span>` : ""}</div>`;
+          }).join("");
+        })()}</div>
       </div>` : ""}
   </div>`;
 }
@@ -905,7 +954,7 @@ function renderShop() {
     const it = findItem(t.dataset.item); if (!it) return;
     const f = plan?.final_build?.find(x => x.item.toLowerCase() === it.name.toLowerCase());
     const r = state.meta?.find(x => x.item === it.name);
-    $("#shopDetail").innerHTML = `<b>${esc(it.name)}</b> · ${it.cost.toLocaleString()} souls${it.active ? " · active" : ""}${it.desc ? ` — ${esc(it.desc)}` : ""}${r ? `<br><b>vs this lineup:</b> ${r.win_rate}% win rate, bought around ${Math.round(r.avg_buy_min)}m` : ""}${f?.why ? `<br><b>Coach:</b> ${esc(f.why)}${f.by_min != null ? ` (by ${Number(f.by_min).toFixed(0)}m)` : ""}` : ""}`;
+    $("#shopDetail").innerHTML = `<b>${esc(it.name)}</b> · ${it.cost.toLocaleString()} souls${it.active ? " · active" : ""}${it.desc ? ` — ${esc(it.desc)}` : ""}${r ? `<br><b>vs this lineup:</b> ${r.win_rate}% win rate, bought around ${Math.round(r.avg_buy_min)}m` : ""}${it.components?.length ? `<br><b>Built from:</b> ${it.components.map(esc).join(" + ")}` : ""}${it.builds_into?.length ? `<br><b>Upgrades into:</b> ${it.builds_into.map(esc).join(", ")}` : ""}${f?.why ? `<br><b>Coach:</b> ${esc(f.why)}${f.by_min != null ? ` (by ${Number(f.by_min).toFixed(0)}m)` : ""}${f.sell_min ? `, sell around ${Math.round(f.sell_min)}m` : ""}` : ""}`;
   };
   el.querySelector(".shop-body").addEventListener("mouseover", showDetail);
   el.querySelector(".shop-body").addEventListener("click", showDetail);

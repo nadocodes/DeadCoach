@@ -327,6 +327,10 @@ a.btn { text-decoration: none; display: inline-block; }
 .connected { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .connected select { padding: 8px 10px; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: var(--r-md); font: inherit; }
 .conn-dot { width: 9px; height: 9px; border-radius: 9999px; background: var(--win); box-shadow: 0 0 0 3px color-mix(in srgb, var(--win) 25%, transparent); }
+.strip .phase { flex-shrink: 0; align-self: stretch; display: flex; align-items: center; padding: 0 2px 0 6px; border-left: 1px dashed var(--line); }
+.strip .phase:first-child { border-left: 0; padding-left: 0; }
+.strip .phase span { writing-mode: vertical-rl; transform: rotate(180deg); font: 500 10px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.strip .slotc .note { font: 400 10px/1.2 var(--mono); color: var(--accent-text); max-width: 64px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .site-foot { color: var(--muted); font-size: 13px; border-top: 1px solid var(--line); padding-top: 16px; display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: space-between; }
 .site-foot a { color: var(--accent-text); }
 </style>
@@ -359,6 +363,6 @@ a.btn { text-decoration: none; display: inline-block; }
     <span>Your account ID, saved coaching and any API key stay in your browser.</span>
   </footer>
 </div>
-<script src="app.js?v=5"></script>
+<script src="app.js?v=6"></script>
 </body>
 </html>
