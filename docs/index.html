@@ -301,6 +301,23 @@ a.btn { text-decoration: none; display: inline-block; }
 .keyrow input, .keyrow select { padding: 9px 12px; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: var(--r-md); font: inherit; }
 .keyrow input { flex: 1 1 260px; min-width: 0; font-family: var(--mono); }
 .grade.pending { --g: var(--line); color: var(--muted); }
+.finder { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.finder-msg { font-size: 14px; color: var(--muted); }
+.finder-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; }
+.finder-row { display: flex; align-items: center; gap: 10px; text-align: left; padding: 8px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg); min-width: 0; }
+.finder-row:hover { border-color: var(--accent); }
+.finder-row img { width: 40px; height: 40px; border-radius: var(--r-sm); flex-shrink: 0; background: var(--surface-2); }
+.finder-row span { display: flex; flex-direction: column; min-width: 0; }
+.finder-row small { font: 400 11px/1.4 var(--mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.idcard { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 10px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); }
+.idcard .who { display: flex; align-items: center; gap: 8px; color: var(--fg); text-decoration: none; margin-right: 8px; }
+.idcard .who img { width: 28px; height: 28px; border-radius: var(--r-sm); }
+.idcard .who:hover b { color: var(--accent-text); }
+.idf { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+.idf small { font: 400 11px/1 var(--mono); color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.idf code { font: 400 13px/1.3 var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.idf .copy { border: 1px solid var(--line); background: none; color: var(--accent-text); border-radius: 9999px; font: 500 11px/1 var(--mono); padding: 4px 8px; }
+.idf .copy:hover { border-color: var(--accent); }
 .site-foot { color: var(--muted); font-size: 13px; border-top: 1px solid var(--line); padding-top: 16px; display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: space-between; }
 .site-foot a { color: var(--accent-text); }
 </style>
@@ -313,10 +330,12 @@ a.btn { text-decoration: none; display: inline-block; }
       <p>Deadlock post-match coaching. Load any account, see each game graded against its lobby for the role you played, and get a better build path.</p>
     </div>
     <form class="search" id="searchForm">
-      <input id="acctInput" inputmode="numeric" autocomplete="off" placeholder="Account ID or SteamID64" aria-label="Deadlock account ID or SteamID64">
+      <input id="acctInput" inputmode="numeric" autocomplete="off" placeholder="Steam profile link, SteamID, account ID or name" aria-label="Steam profile link, SteamID, account ID or Steam name">
       <button class="btn" type="submit">Load</button>
     </form>
   </header>
+  <div id="finder" class="finder" hidden></div>
+  <div id="idcard" class="idcard" hidden></div>
 
   <div class="grid">
     <aside>

@@ -42,6 +42,73 @@ const store = {
   del(k) { try { localStorage.removeItem(k); } catch {} },
 };
 
+// What the search box was given: a direct ID in any Steam format, a custom /id/ link, or a name.
+function parseInput(raw) {
+  const t = String(raw || "").trim();
+  let m;
+  if ((m = t.match(/steamcommunity\.com\/profiles\/(\d{5,})/i))) return { kind: "id", id: normalizeId(m[1]) };
+  if ((m = t.match(/steamcommunity\.com\/id\/([^/?#\s]+)/i))) return { kind: "vanity", vanity: decodeURIComponent(m[1]) };
+  if ((m = t.match(/STEAM_[0-5]:([01]):(\d+)/i))) return { kind: "id", id: String(Number(m[2]) * 2 + Number(m[1])) };
+  if ((m = t.match(/\[?U:1:(\d+)\]?/i))) return { kind: "id", id: m[1] };
+  if (/^\d{5,}$/.test(t)) return { kind: "id", id: normalizeId(t) };
+  if (t.length >= 2) return { kind: "name", q: t };
+  return null;
+}
+const toSteam64 = id => String(BigInt(id) + STEAM64_OFFSET);
+const steamIdFormats = id => ({ account: id, steam64: toSteam64(id), steam2: `STEAM_1:${Number(id) % 2}:${Math.floor(Number(id) / 2)}`, steam3: `[U:1:${id}]` });
+
+async function searchSteam(q) {
+  try { return await api("/v1/players/steam-search", { search_query: q, limit: 50 }); }
+  catch { return []; }
+}
+
+// Resolve the box's input to an account and load it, or show a list of matching players to pick from.
+async function findAndLoad(raw) {
+  const parsed = parseInput(raw);
+  const finder = $("#finder");
+  if (!parsed) { finder.hidden = false; finder.innerHTML = `<div class="finder-msg">Paste a Steam profile link, a SteamID in any format, an account ID, or a Steam name.</div>`; return; }
+  if (parsed.kind === "id") { finder.hidden = true; return loadAccount(parsed.id); }
+  finder.hidden = false;
+  finder.innerHTML = `<div class="finder-msg">Looking up ${esc(parsed.vanity || parsed.q)}…</div>`;
+  const q = parsed.vanity || parsed.q;
+  const results = await searchSteam(q);
+  if (parsed.vanity) {
+    const exact = results.find(r => new RegExp(`/id/${q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/?$`, "i").test(r.profileurl || ""));
+    if (exact) { finder.hidden = true; return loadAccount(String(exact.account_id)); }
+  }
+  if (!results.length) {
+    finder.innerHTML = `<div class="finder-msg">No Deadlock players found for “${esc(q)}”. ${parsed.vanity ? "Custom links are matched through Steam names, so try typing the player's Steam name instead." : "Try their exact Steam name, or paste their profile link."}</div>`;
+    return;
+  }
+  finder.innerHTML = `<div class="finder-msg">${parsed.vanity ? `Couldn't match that custom link exactly. Pick the player:` : `Players matching “${esc(q)}”:`}</div>
+    <div class="finder-list">${results.slice(0, 12).map(r => `<button type="button" class="finder-row" data-id="${r.account_id}">
+      <img src="${esc(r.avatarmedium || r.avatar || "")}" alt="" loading="lazy" referrerpolicy="no-referrer">
+      <span><b>${esc(r.personaname)}</b><small>${esc((r.profileurl || "").replace(/^https?:\/\/steamcommunity\.com/, ""))} · account ${r.account_id}</small></span></button>`).join("")}</div>`;
+  finder.querySelectorAll(".finder-row").forEach(b => b.onclick = () => { finder.hidden = true; loadAccount(b.dataset.id); });
+}
+
+// Show who's loaded plus every ID format, with copy buttons.
+async function renderIdCard(id) {
+  const el = $("#idcard"); if (!el) return;
+  const f = steamIdFormats(id);
+  const row = (label, v) => `<span class="idf"><small>${label}</small><code>${esc(v)}</code><button type="button" class="copy" data-v="${esc(v)}" aria-label="Copy ${label}">Copy</button></span>`;
+  const draw = p => {
+    el.hidden = false;
+    el.innerHTML = `${p ? `<a class="who" href="${esc(p.profileurl)}" target="_blank" rel="noopener"><img src="${esc(p.avatarmedium || p.avatar || "")}" alt="" referrerpolicy="no-referrer"><b>${esc(p.personaname)}</b></a>` : ""}
+      ${row("Account ID", f.account)}${row("SteamID64", f.steam64)}${row("SteamID", f.steam2)}${row("SteamID3", f.steam3)}
+      <span class="idf"><small>Share link</small><code>${esc(location.origin + location.pathname + "?id=" + id)}</code><button type="button" class="copy" data-v="${esc(location.origin + location.pathname + "?id=" + id)}" aria-label="Copy share link">Copy</button></span>`;
+    el.querySelectorAll(".copy").forEach(b => b.onclick = async () => {
+      try { await navigator.clipboard.writeText(b.dataset.v); b.textContent = "Copied"; setTimeout(() => b.textContent = "Copy", 1500); }
+      catch { const r = document.createRange(); r.selectNodeContents(b.previousElementSibling); getSelection().removeAllRanges(); getSelection().addRange(r); }
+    });
+  };
+  draw(null);
+  try {
+    const [p] = await api("/v1/players/steam", { account_ids: id });
+    if (p && state.account === id) draw(p);
+  } catch { /* the ID formats are still shown */ }
+}
+
 function normalizeId(raw) {
   const digits = String(raw).match(/\d{5,}/g);
   if (!digits) return null;
@@ -200,6 +267,7 @@ async function loadAccount(id) {
   store.set("dc:account", id);
   history.replaceState(null, "", "?id=" + id);
   $("#acctMeta").textContent = "";
+  renderIdCard(id);
   $("#ledger").innerHTML = `<div class="notice">Loading matches for ${esc(id)}…</div>`;
   showEmptyMain();
   try {
@@ -718,19 +786,14 @@ function renderShop() {
 }
 
 // ---------------------------------------------------------------- boot
-$("#searchForm").addEventListener("submit", e => {
-  e.preventDefault();
-  const id = normalizeId($("#acctInput").value);
-  if (!id) { $("#acctInput").setCustomValidity("Enter a numeric account ID, SteamID64 or Steam profile URL with the number in it"); $("#acctInput").reportValidity(); return; }
-  $("#acctInput").setCustomValidity("");
-  loadAccount(id);
-});
-$("#acctInput").addEventListener("input", e => e.target.setCustomValidity(""));
+$("#searchForm").addEventListener("submit", e => { e.preventDefault(); findAndLoad($("#acctInput").value); });
 
 (async () => {
   try { await loadStatic(); } catch { $("#ledger").innerHTML = `<div class="notice">Couldn't load the item list. Reload the page.</div>`; return; }
   const fromUrl = new URLSearchParams(location.search).get("id");
-  const id = normalizeId(fromUrl || "") || store.get("dc:account");
+  const parsed = fromUrl && parseInput(fromUrl);
+  if (parsed && parsed.kind !== "id") return findAndLoad(fromUrl);
+  const id = parsed?.id || store.get("dc:account");
   if (id) loadAccount(id);
-  else $("#ledger").innerHTML = `<div class="notice">Enter your Deadlock account ID or SteamID64 above to load your matches. Share the page link afterwards and it opens straight to your games.</div>`;
+  else $("#ledger").innerHTML = `<div class="notice">Paste a Steam profile link, a SteamID in any format, an account ID, or a Steam name above to load matches. Share the page link afterwards and it opens straight to your games.</div>`;
 })();
