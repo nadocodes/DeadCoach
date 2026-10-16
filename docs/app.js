@@ -12,7 +12,9 @@ const MODE_LABEL = Object.fromEntries(MODES);
 const SLOT_ORDER = ["weapon", "vitality", "spirit"];
 const TIER_COST = { 1: 800, 2: 1600, 3: 3200, 4: 6400, 5: 9999 };
 const CACHE_VERSION = "v2";
-const CLAUDE_MODELS = [["claude-sonnet-5-5", "Sonnet 5.5 (cheaper)"], ["claude-opus-5-5", "Opus 5.5 (deepest)"]];
+const CLAUDE_MODELS = [["claude-opus-5-5", "Opus 5.5 (best coaching)"], ["claude-sonnet-5-5", "Sonnet 5.5 (about half the cost)"]];
+const KEY_PAGE = "https://platform.claude.com/settings/keys";
+const KEY_PATTERN = /sk-ant-[A-Za-z0-9_-]{20,}/;
 
 const state = {
   items: new Map(), itemsById: new Map(), heroes: new Map(),
@@ -411,7 +413,7 @@ async function selectMatch(matchId) {
   if (state.matchId !== matchId) return;
   const saved = store.get(`dc:plan:${state.account}:${matchId}`);
   if (saved) { state.plan = saved.plan; state.planSource = saved.source; state.coachKind = saved.source; }
-  else { state.plan = dataCoach(g, state.meta); state.planSource = "data"; if (state.coachKind !== "data") state.coachKind = "data"; }
+  else { state.plan = dataCoach(g, state.meta); state.planSource = "data"; if (state.coachKind === "plan") state.coachKind = "data"; }
   renderMeta(); renderCoach();
 }
 
@@ -679,25 +681,63 @@ function savePlan(plan, source) {
   store.set(`dc:plan:${state.account}:${state.matchId}`, { plan, source, at: Date.now() });
 }
 
+const anthropicHeaders = key => ({ "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json", "anthropic-dangerous-direct-browser-access": "true" });
+
+function claudeErrorMessage(status, data) {
+  const msg = data?.error?.message || "";
+  if (status === 401) return "Claude rejected that API key. Connect again with a new key.";
+  if (/credit balance/i.test(msg)) return "Your Anthropic account is out of credit. Add credit at platform.claude.com → Billing, then try again.";
+  if (status === 429) return "Too many requests to Claude right now. Wait a minute and try again.";
+  if (status === 529 || status >= 500) return "Claude is overloaded right now. Try again in a minute.";
+  return msg || `Claude answered ${status}.`;
+}
+
+// Check a key without spending anything (the models list is free), then remember it.
+async function connectClaude(raw) {
+  const key = (String(raw || "").match(KEY_PATTERN) || [])[0];
+  const status = $("#connectStatus");
+  if (!key) { if (status) status.textContent = "That doesn't look like an Anthropic API key. It starts with sk-ant-."; return false; }
+  if (status) status.textContent = "Checking the key…";
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/models?limit=1", { headers: anthropicHeaders(key) });
+    if (!res.ok) { if (status) status.textContent = res.status === 401 ? "Anthropic didn't accept that key. Copy it again from the key page (the whole key, starting sk-ant-)." : claudeErrorMessage(res.status, await res.json().catch(() => ({}))); return false; }
+  } catch { if (status) status.textContent = "Couldn't reach Anthropic. Check your connection and try again."; return false; }
+  store.set("dc:key", key);
+  state.connectPending = false;
+  renderCoach();
+  coachWithKey();   // connected: coach the open match straight away
+  return true;
+}
+
 async function coachWithKey() {
-  const key = store.get("dc:key"); if (!key) return;
+  const key = store.get("dc:key"); if (!key || !state.game) return;
   const matchId = state.matchId, model = store.get("dc:model") || CLAUDE_MODELS[0][0];
   const ctl = state.ctl = new AbortController();
   renderCoach(true);
   try {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST", signal: ctl.signal,
-      headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json", "anthropic-dangerous-direct-browser-access": "true" },
-      body: JSON.stringify({ model, max_tokens: 4000, messages: [{ role: "user", content: fullPrompt() }] }),
+      headers: { ...anthropicHeaders(key), "anthropic-beta": "server-side-fallback-2026-07-01" },
+      body: JSON.stringify({
+        model, max_tokens: 16000, fallbacks: "default",
+        output_config: { effort: "medium" },
+        messages: [{ role: "user", content: claudeAiPrompt() }],
+      }),
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(res.status === 401 ? "That API key was rejected. Check it in the Claude (API key) tab." : data?.error?.message || `Claude answered ${res.status}.`);
+    if (!res.ok) {
+      if (res.status === 401) store.del("dc:key");
+      throw new Error(claudeErrorMessage(res.status, data));
+    }
+    if (data.stop_reason === "refusal") throw new Error("Claude declined to coach this match. Try the Quick coach instead.");
     const text = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("\n");
     const plan = cleanPlan(parseJsonLoose(text));
     if (!plan) throw new Error("Claude's answer came back malformed. Press Coach me to try again.");
+    store.set(`dc:plan:${state.account}:${matchId}`, { plan, source: "key", at: Date.now() });
+    state.ctl = null;
     if (state.matchId !== matchId) return;
-    savePlan(plan, "key");
-    state.ctl = null; renderCoach();
+    state.plan = plan; state.planSource = "key"; state.shopViewPicked = false; state.shopTabPicked = false;
+    renderCoach();
   } catch (e) {
     state.ctl = null;
     if (state.matchId !== matchId) return;
@@ -706,11 +746,17 @@ async function coachWithKey() {
   }
 }
 
+// After "Get an API key", pick the key up from the clipboard when the user comes back.
+async function checkClipboardForKey() {
+  if (!state.connectPending || store.get("dc:key") || document.visibilityState !== "visible") return;
+  try { const t = await navigator.clipboard.readText(); if (KEY_PATTERN.test(t || "")) connectClaude(t); } catch { /* they can paste it instead */ }
+}
+
 // ---------------------------------------------------------------- coach panel
 function renderCoach(waiting) {
   const el = $("#coach"); if (!el || !state.game) return;
-  const kinds = [["data", "Quick coach", "free"], ["plan", "Claude", "your claude.ai plan"], ["key", "Claude", "your API key"]];
   const key = store.get("dc:key");
+  const kinds = [["data", "Quick coach", "free"], ["key", "Claude", key ? "● connected" : "connect once"], ["plan", "claude.ai", "your plan, copy & paste"]];
   let controls = "";
   if (state.coachKind === "data") {
     controls = `<p class="muted cv-note">Built from the meta win rates for ${esc(state.game.hero)} against this exact enemy lineup and your lobby ranks. Instant and free.</p>`;
@@ -732,14 +778,25 @@ function renderCoach(waiting) {
         <div class="actions"><button class="btn ghost" type="button" id="usePaste">Show it</button><button class="btn ghost" type="button" id="copyPrompt">Copy the request again</button></div>
         <textarea id="promptText" class="ta" readonly hidden></textarea>
       </details></div>`;
+  } else if (key) {
+    controls = `<div class="connected">
+        <span class="conn-dot" aria-hidden="true"></span><b>Connected to Claude</b>
+        <label for="modelSel" class="muted">Model</label><select id="modelSel">${CLAUDE_MODELS.map(([v, l]) => `<option value="${v}" ${v === (store.get("dc:model") || CLAUDE_MODELS[0][0]) ? "selected" : ""}>${l}</option>`).join("")}</select>
+        ${waiting ? `<button class="btn ghost" type="button" id="stopBtn">Stop</button>` : `<button class="btn" type="button" id="keyCoach">${state.planSource === "key" ? "Re-coach" : "Coach me"}</button>`}
+        <button class="btn ghost" type="button" id="forgetKey">Disconnect</button>
+      </div>
+      <p class="muted cv-note">Each coaching note costs roughly 5–10 cents on your Anthropic account with Opus, about half with Sonnet. Your key stays in this browser and only goes to api.anthropic.com.</p>`;
   } else {
-    controls = key
-      ? `<div class="keyrow"><label for="modelSel" class="muted">Model</label><select id="modelSel">${CLAUDE_MODELS.map(([v, l]) => `<option value="${v}" ${v === (store.get("dc:model") || CLAUDE_MODELS[0][0]) ? "selected" : ""}>${l}</option>`).join("")}</select>
-          ${waiting ? `<button class="btn ghost" type="button" id="stopBtn">Stop</button>` : `<button class="btn" type="button" id="keyCoach">${state.planSource === "key" ? "Re-coach" : "Coach me"}</button>`}
-          <button class="btn ghost" type="button" id="forgetKey">Forget key</button></div>
-         <p class="muted cv-note">Billed to your Anthropic account, usually a few cents per note. Your key stays in this browser and is only sent to api.anthropic.com.</p>`
-      : `<form class="keyrow" id="keyForm"><input id="keyInput" type="password" autocomplete="off" placeholder="sk-ant-…" aria-label="Anthropic API key"><button class="btn" type="submit">Save key</button></form>
-         <p class="muted cv-note">Get a key at console.anthropic.com. It's saved only in this browser and sent only to api.anthropic.com.</p>`;
+    controls = `<div class="connect">
+        <p class="cv-note"><b>Connect Claude once</b> and every match gets a full coaching note with one click.</p>
+        <ol class="steps">
+          <li><a class="btn" id="getKey" href="${KEY_PAGE}" target="_blank" rel="noopener">Get an API key</a> &nbsp;Sign in to Anthropic, press <b>Create Key</b>, then <b>Copy</b>.</li>
+          <li>Come back here. DeadCoach picks the key up from your clipboard and connects by itself (allow clipboard access if asked), or paste it:
+            <input id="keyInput" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-…" aria-label="Anthropic API key"></li>
+        </ol>
+        <div class="muted cv-note" id="connectStatus" role="status"></div>
+        <p class="muted cv-note">This uses Anthropic's API, which is billed per use (roughly 5–10 cents per note) and is separate from a Claude Pro or Max plan. To use your plan instead, pick the claude.ai tab. Your key is saved only in this browser and sent only to api.anthropic.com.</p>
+      </div>`;
   }
   const sourceNote = { data: "Quick coach", plan: "Claude (claude.ai)", key: "Claude (API)" }[state.planSource];
   el.innerHTML = `
@@ -766,7 +823,9 @@ function renderCoach(waiting) {
     catch { const t = $("#promptText"); t.hidden = false; t.value = text; t.select(); $("#copyPrompt").textContent = "Copy the selected text"; }
   });
   $("#usePaste")?.addEventListener("click", () => acceptClaudeReply($("#replyText").value || ""));
-  $("#keyForm")?.addEventListener("submit", e => { e.preventDefault(); const v = $("#keyInput").value.trim(); if (v) { store.set("dc:key", v); renderCoach(); } });
+  $("#getKey")?.addEventListener("click", () => { state.connectPending = true; });
+  $("#keyInput")?.addEventListener("input", e => { if (KEY_PATTERN.test(e.target.value)) connectClaude(e.target.value); });
+  $("#keyInput")?.addEventListener("keydown", e => { if (e.key === "Enter") connectClaude(e.target.value); });
   $("#forgetKey")?.addEventListener("click", () => { store.del("dc:key"); renderCoach(); });
   $("#modelSel")?.addEventListener("change", e => store.set("dc:model", e.target.value));
   $("#keyCoach")?.addEventListener("click", coachWithKey);
@@ -856,9 +915,13 @@ function renderShop() {
 $("#searchForm").addEventListener("submit", e => { e.preventDefault(); findAndLoad($("#acctInput").value); });
 window.addEventListener("focus", checkClipboardForReply);
 document.addEventListener("visibilitychange", checkClipboardForReply);
+window.addEventListener("focus", checkClipboardForKey);
+document.addEventListener("visibilitychange", checkClipboardForKey);
 document.addEventListener("paste", e => {
   const t = e.target;
   if (t && (t.id === "acctInput" || t.id === "keyInput")) return;
+  const pasted = e.clipboardData?.getData("text") || "";
+  if (state.coachKind === "key" && !store.get("dc:key") && KEY_PATTERN.test(pasted)) { e.preventDefault(); connectClaude(pasted); return; }
   const text = e.clipboardData?.getData("text") || "";
   if (text.includes("final_build") || text.includes("biggest_miss")) { e.preventDefault(); acceptClaudeReply(text); }
 });
