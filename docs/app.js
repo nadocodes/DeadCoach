@@ -130,7 +130,7 @@ async function api(path, params = {}, signal) {
 
 // ---------------------------------------------------------------- static data
 async function loadStatic() {
-  const [items, heroes] = await Promise.all([fetch("items.json").then(r => r.json()), fetch("heroes.json").then(r => r.json())]);
+  const [items, heroes] = await Promise.all([fetch("items.json?v=3").then(r => r.json()), fetch("heroes.json?v=3").then(r => r.json())]);
   for (const i of items) { state.items.set(i.name.toLowerCase(), i); state.itemsById.set(i.id, i); }
   for (const h of heroes) state.heroes.set(h.id, h);
 }
@@ -496,7 +496,7 @@ function renderMeta() {
 function tile(name, opts = {}) {
   const it = findItem(name) || { name, slot: opts.slot || "weapon", cost: TIER_COST[opts.tier] || "", tier: opts.tier };
   const cls = ["it", it.slot, opts.size || "", opts.state || ""].join(" ");
-  const icon = it.icon ? `<img src="${it.icon}" alt="">` : `<span class="fb">${esc((it.name || "?")[0])}</span>`;
+  const icon = it.icon ? `<img src="${it.icon}" alt="" loading="lazy">` : `<span class="fb">${esc((it.name || "?")[0])}</span>`;
   if (opts.size === "xs") return `<span class="${cls}" title="${esc(it.name)}"><span class="ic">${icon}</span></span>`;
   const tip = `${it.name} · ${it.cost} souls${it.active ? " · active" : ""}${it.desc ? " — " + it.desc : ""}`;
   return `<div class="${cls}" title="${esc(tip)}" data-item="${esc(it.name)}">
@@ -727,11 +727,11 @@ function renderPlan(plan) {
     </div>
     ${plan.swaps?.length ? `<h4 class="cv-sub">Swaps</h4><div class="swaps">${plan.swaps.map(sw => `<div class="swap">
         ${sw.out && findItem(sw.out) ? tile(sw.out, { size: "sm", state: "mine" }) : `<span class="none">empty<br>slot</span>`}
-        <span class="arrow">→</span>${tile(sw.in, { size: "sm", state: "coach" })}
+        <span class="arrow">→</span>${tile(sw.in, { size: "sm", state: "pick" })}
         <span class="why">${sw.by_min != null ? `<span class="when">by ${Number(sw.by_min).toFixed(0)}m</span>` : ""}${inl(sw.why || "")}</span></div>`).join("")}</div>` : ""}
     ${plan.final_build?.length ? `<h4 class="cv-sub">Build path</h4>
       <div class="path">
-        <span class="who">You</span><div class="strip">${m.build.map(b => `<div class="slotc ${b.sold_min != null ? "sold" : ""}"><span class="m">${b.bought_min.toFixed(0)}m</span>${tile(b.item, { size: "sm", state: inFinal(b.item) ? "coach" : "" })}</div>`).join("")}</div>
+        <span class="who">You</span><div class="strip">${m.build.map(b => `<div class="slotc ${b.sold_min != null ? "sold" : ""}"><span class="m">${b.bought_min.toFixed(0)}m</span>${tile(b.item, { size: "sm", state: inFinal(b.item) ? "pick" : "" })}</div>`).join("")}</div>
         <span class="who coachw">Coach</span><div class="strip">${plan.final_build.map((f, i) => `<div class="slotc" title="${esc(f.why || "")}"><span class="m">${f.by_min != null ? Number(f.by_min).toFixed(0) + "m" : ""}</span>${tile(f.item, { size: "sm", order: i + 1, state: mine.includes(f.item.toLowerCase()) ? "mine" : "" })}</div>`).join("")}</div>
       </div>` : ""}
   </div>`;
@@ -748,9 +748,9 @@ function renderShop() {
   if (!state.shopViewPicked || !views.some(([k]) => k === state.shopView)) state.shopView = views[0][0];
   const lit = name => {
     const k = name.toLowerCase(), c = coachList.includes(k), o = mineSet.has(k);
-    if (state.shopView === "coach") return c ? "coach" : (o ? "dim mine" : "dim");
+    if (state.shopView === "coach") return c ? "pick" : (o ? "dim mine" : "dim");
     if (state.shopView === "mine") return o ? "mine" : "dim";
-    return c ? "coach" : o ? "mine" : "dim";
+    return c ? "pick" : o ? "mine" : "dim";
   };
   const items = [...state.items.values()];
   const count = slot => items.filter(i => i.slot === slot && !lit(i.name).startsWith("dim")).length;
