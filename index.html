@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deadlock Macro & Itemization Coach</title>
+<style>
+  :root {
+    --bg: #0e0e12;
+    --panel: #17171d;
+    --panel-2: #1f1f28;
+    --accent: #e2483c; /* Deadlock-ish red */
+    --text: #eae8e3;
+    --muted: #9a97a8;
+    --win: #4caf7d;
+    --loss: #d9534f;
+    --border: #2a2a35;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+  header {
+    padding: 24px 32px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 {
+    margin: 0 0 4px;
+    font-size: 22px;
+    letter-spacing: 0.3px;
+  }
+  header p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 14px;
+  }
+  .layout {
+    display: grid;
+    grid-template-columns: 340px 1fr;
+    gap: 24px;
+    padding: 24px 32px;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+  @media (max-width: 800px) {
+    .layout { grid-template-columns: 1fr; }
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px;
+  }
+  .panel h2 {
+    font-size: 15px;
+    margin: 0 0 12px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+  }
+  input[type="text"], input[type="number"] {
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--text);
+    font-size: 14px;
+  }
+  button {
+    margin-top: 10px;
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 6px;
+    border: none;
+    background: var(--accent);
+    color: white;
+    font-weight: 600;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button:hover { filter: brightness(1.08); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .match-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    border: 1px solid transparent;
+  }
+  .match-item:hover { background: var(--panel-2); border-color: var(--border); }
+  .match-item.selected { background: var(--panel-2); border-color: var(--accent); }
+  .badge {
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 4px;
+  }
+  .badge.win { background: rgba(76,175,125,0.15); color: var(--win); }
+  .badge.loss { background: rgba(217,83,79,0.15); color: var(--loss); }
+  .hero-name { font-weight: 600; }
+  .muted { color: var(--muted); font-size: 12px; }
+  .coach-note {
+    white-space: pre-wrap;
+    line-height: 1.55;
+    font-size: 15px;
+  }
+  .empty {
+    color: var(--muted);
+    font-size: 14px;
+    padding: 40px 0;
+    text-align: center;
+  }
+  .error {
+    color: var(--loss);
+    font-size: 13px;
+    margin-top: 8px;
+  }
+  .spinner {
+    display: inline-block;
+    width: 14px; height: 14px;
+    border: 2px solid rgba(255,255,255,0.3);
+    border-top-color: white;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    vertical-align: middle;
+    margin-right: 6px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .icon {
+    width: 28px; height: 28px;
+    border-radius: 6px;
+    object-fit: cover;
+    background: var(--panel-2);
+    flex-shrink: 0;
+  }
+  .icon.sm { width: 20px; height: 20px; border-radius: 4px; }
+  .match-item { gap: 10px; }
+  .match-item .info { display: flex; align-items: center; gap: 10px; }
+  .hero-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .item-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .item-grid .item-chip {
+    display: flex; align-items: center; gap: 5px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 3px 8px 3px 3px;
+    font-size: 12px;
+  }
+  .live-banner {
+    display: none;
+    background: var(--panel-2);
+    border: 1px solid var(--accent);
+    border-radius: 10px;
+    padding: 14px 18px;
+    margin: 0 32px 0;
+    max-width: 1136px;
+    margin-left: auto; margin-right: auto;
+  }
+  .live-banner.visible { display: block; }
+  .live-banner .live-dot {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--loss); margin-right: 6px;
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+  .live-banner .live-nudge { margin-top: 8px; font-size: 14px; line-height: 1.5; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Deadlock Macro & Itemization Coach</h1>
+  <p>Pulls your recent matches + current meta stats, then asks Claude for a coaching note. Local tool — data from api.deadlock-api.com (community, unofficial).</p>
+</header>
+
+<div id="liveBanner" class="live-banner">
+  <div><span class="live-dot"></span><strong>Live match detected</strong></div>
+  <div id="liveMatchup" class="hero-row" style="margin-top:8px;"></div>
+  <div id="liveNudge" class="live-nudge"></div>
+</div>
+
+<div class="layout">
+  <div class="panel">
+    <h2>Your Account</h2>
+    <input type="number" id="accountId" placeholder="Deadlock account_id (32-bit)">
+    <button id="loadMatches">Load recent matches</button>
+    <p class="muted" style="margin-top:10px;">
+      Not sure where to find your account_id? It's the 32-bit Steam account ID
+      (SteamID64 minus 76561197960265728). Community tools like the ones linked
+      in deadlock-api.com's docs can convert a Steam profile URL for you.
+    </p>
+    <div id="matchError" class="error"></div>
+
+    <h2 style="margin-top:22px;">Recent Matches</h2>
+    <div id="matchList"><div class="empty">Load your matches to see them here.</div></div>
+  </div>
+
+  <div class="panel">
+    <h2>Coaching Note</h2>
+    <div id="coachArea">
+      <div class="empty">Pick a match on the left to get a coaching note on your itemization and macro.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+let selectedAccountId = null;
+
+document.getElementById('loadMatches').addEventListener('click', async () => {
+  const accountId = document.getElementById('accountId').value.trim();
+  const errBox = document.getElementById('matchError');
+  errBox.textContent = '';
+  if (!accountId) { errBox.textContent = 'Enter an account_id first.'; return; }
+  selectedAccountId = accountId;
+
+  const listEl = document.getElementById('matchList');
+  listEl.innerHTML = '<div class="empty"><span class="spinner"></span>Loading matches…</div>';
+
+  try {
+    const res = await fetch(`/api/matches?account_id=${encodeURIComponent(accountId)}`);
+    const data = await res.json();
+    if (!res.ok) { errBox.textContent = data.error || 'Failed to load matches.'; listEl.innerHTML=''; return; }
+
+    if (!data.matches || data.matches.length === 0) {
+      listEl.innerHTML = '<div class="empty">No matches found.</div>';
+      return;
+    }
+
+    listEl.innerHTML = '';
+    data.matches.forEach(m => {
+      const div = document.createElement('div');
+      div.className = 'match-item';
+      const mins = m.duration_s ? Math.round(m.duration_s / 60) : '?';
+      const iconImg = m.hero_icon ? `<img class="icon" src="${m.hero_icon}" alt="">` : '';
+      div.innerHTML = `
+        <div class="info">
+          ${iconImg}
+          <div>
+            <div class="hero-name">${m.hero_name}</div>
+            <div class="muted">${mins} min &middot; match ${m.match_id}</div>
+          </div>
+        </div>
+        <span class="badge ${m.won ? 'win' : 'loss'}">${m.won ? 'WIN' : 'LOSS'}</span>
+      `;
+      div.addEventListener('click', () => selectMatch(div, m.match_id));
+      listEl.appendChild(div);
+    });
+  } catch (e) {
+    errBox.textContent = 'Network error: ' + e.message;
+    listEl.innerHTML = '';
+  }
+});
+
+async function selectMatch(el, matchId) {
+  document.querySelectorAll('.match-item').forEach(x => x.classList.remove('selected'));
+  el.classList.add('selected');
+
+  const coachArea = document.getElementById('coachArea');
+  coachArea.innerHTML = '<div class="empty"><span class="spinner"></span>Analyzing itemization & pulling meta stats…</div>';
+
+  try {
+    const res = await fetch(`/api/coach?account_id=${encodeURIComponent(selectedAccountId)}&match_id=${matchId}`);
+    const data = await res.json();
+    if (!res.ok) {
+      coachArea.innerHTML = `<div class="error">${data.error || 'Failed to generate coaching note.'}</div>`;
+      return;
+    }
+    const d = data.display || {};
+    const heroIcon = d.hero_icon ? `<img class="icon" src="${d.hero_icon}" alt="">` : '';
+    const enemyIcons = (d.enemy_heroes || []).map(h =>
+      `<img class="icon sm" src="${h.icon || ''}" title="${h.name}" alt="${h.name}">`
+    ).join('');
+    const itemChips = (d.items || []).map(i =>
+      `<span class="item-chip">${i.icon ? `<img class="icon sm" src="${i.icon}" alt="">` : ''}${i.name}</span>`
+    ).join('');
+    coachArea.innerHTML = `
+      <div class="hero-row">${heroIcon}<span class="muted">vs</span>${enemyIcons}</div>
+      <div class="coach-note"></div>
+      ${itemChips ? `<div class="muted" style="margin-top:14px;">Items bought</div><div class="item-grid">${itemChips}</div>` : ''}
+    `;
+    coachArea.querySelector('.coach-note').textContent = data.coaching_note;
+  } catch (e) {
+    coachArea.innerHTML = `<div class="error">Network error: ${e.message}</div>`;
+  }
+}
+
+// --- Phase 2: live match nudge -------------------------------------------
+let livePollTimer = null;
+
+function stopLivePolling() {
+  if (livePollTimer) { clearInterval(livePollTimer); livePollTimer = null; }
+  document.getElementById('liveBanner').classList.remove('visible');
+}
+
+async function pollLiveStatus() {
+  if (!selectedAccountId) return;
+  try {
+    const res = await fetch(`/api/live/status?account_id=${encodeURIComponent(selectedAccountId)}`);
+    const data = await res.json();
+    const banner = document.getElementById('liveBanner');
+    if (!res.ok || !data.active) { banner.classList.remove('visible'); return; }
+
+    banner.classList.add('visible');
+    const heroIcon = data.hero.icon ? `<img class="icon" src="${data.hero.icon}" alt="">` : '';
+    const enemyIcons = (data.enemy_heroes || []).map(h =>
+      `<img class="icon sm" src="${h.icon || ''}" title="${h.name}" alt="${h.name}">`
+    ).join('');
+    document.getElementById('liveMatchup').innerHTML =
+      `${heroIcon}<strong>${data.hero.name}</strong><span class="muted">vs</span>${enemyIcons}`;
+    document.getElementById('liveNudge').textContent = data.nudge;
+  } catch (e) {
+    // Silently ignore transient network errors while polling.
+  }
+}
+
+document.getElementById('loadMatches').addEventListener('click', () => {
+  stopLivePolling();
+  pollLiveStatus();
+  livePollTimer = setInterval(pollLiveStatus, 30000);
+});
+</script>
+
+</body>
+</html>

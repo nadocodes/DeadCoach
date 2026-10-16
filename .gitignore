@@ -1,0 +1,10 @@
+# Secrets: never commit
+.env
+
+# Local tooling and generated data
+__pycache__/
+.claude/
+v2_*/
+v3_*/
+sync_*/
+artifact_sync_out/
