@@ -318,6 +318,9 @@ a.btn { text-decoration: none; display: inline-block; }
 .idf code { font: 400 13px/1.3 var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .idf .copy { border: 1px solid var(--line); background: none; color: var(--accent-text); border-radius: 9999px; font: 500 11px/1 var(--mono); padding: 4px 8px; }
 .idf .copy:hover { border-color: var(--accent); }
+.steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; font-size: 14px; max-width: 72ch; }
+.manual summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.manual[open] { display: flex; flex-direction: column; gap: 8px; }
 .site-foot { color: var(--muted); font-size: 13px; border-top: 1px solid var(--line); padding-top: 16px; display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: space-between; }
 .site-foot a { color: var(--accent-text); }
 </style>
@@ -350,6 +353,6 @@ a.btn { text-decoration: none; display: inline-block; }
     <span>Your account ID, saved coaching and any API key stay in your browser.</span>
   </footer>
 </div>
-<script src="app.js?v=3"></script>
+<script src="app.js?v=4"></script>
 </body>
 </html>

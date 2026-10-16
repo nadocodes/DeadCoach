@@ -596,6 +596,29 @@ function matchPayload() {
 }
 const fullPrompt = () => `${COACH_RULES}\n\n${PLAN_FORMAT}\n\nItem catalog (slot, tier, cost):\n${catalogForPrompt()}\n\nMatch data:\n${matchPayload()}`;
 
+// A compact version of the request for claude.ai, small enough to pre-fill through the link.
+function claudeAiPrompt() {
+  const g = state.game, gr = g.grade;
+  const ranks = Object.values(gr.breakdown).filter(r => r.weight).map(r => `${r.label} ${fmtMetric(Object.keys(gr.breakdown).find(k => gr.breakdown[k] === r), r.value)} (${r.rank}/${r.of}, ${Math.round(r.weight * 100)}%)`).join("; ");
+  const build = g.build.map(b => `${b.item} ${Math.round(b.bought_min)}m${b.sold_min != null ? ` (sold ${Math.round(b.sold_min)}m)` : ""}`).join(", ");
+  const meta = (state.meta || []).slice(0, 30).map(r => `${r.item} ${r.win_rate}% @${Math.round(r.avg_buy_min)}m n=${r.matches >= 1000 ? Math.round(r.matches / 1000) + "k" : r.matches}`).join("; ");
+  const names = SLOT_ORDER.map(sl => `${sl}: ${[...state.items.values()].filter(i => i.slot === sl).map(i => i.name).join(", ")}`).join("\n");
+  return `You're a veteran Deadlock coach. Coach this player on itemization and macro: concrete, a clear opinion, name the enemy heroes and what they threaten, cite the win-rate numbers.
+
+MATCH ${g.match_id} · ${MODE_LABEL[g.mode]}${g.mode === "streetbrawl" ? " (short 4v4 rounds; laning matters less)" : ""} · ${g.won ? "WIN" : "LOSS"} · ${mins(g.duration_s)}
+Hero ${g.hero} played as ${gr.role_label} (${gr.role_reason}) · grade ${gr.letter} ${gr.score}/100
+K/D/A ${g.kills}/${g.deaths}/${g.assists} · souls ${g.net_worth} · dmg/min ${gr.per_min.damage} · heal/min ${gr.per_min.healing}
+Enemies: ${g.enemies.join(", ")} · Allies: ${g.allies.join(", ")}
+Lobby ranks for this role (value, rank/players, weight): ${ranks}
+Build in buy order: ${build}
+${g.hero} item win rates vs this enemy lineup (win%, avg buy minute, games): ${meta}
+
+Reply with ONE \`\`\`json code block and nothing else. Don't make an artifact or file. Shape:
+{"match_id": ${g.match_id}, "headline": "max 22 words", "did_well": [{"title": "max 7 words", "detail": "1-2 sentences", "items": []}], "biggest_miss": {"title": "", "detail": "2-3 sentences on these enemies", "items": []}, "do_instead": [{"title": "", "detail": "cite numbers", "items": []}], "macro": null or {"title": "", "detail": ""}, "swaps": [{"out": "item they bought or null", "in": "item", "by_min": 14, "why": "max 16 words"}], "final_build": [{"item": "", "by_min": 6, "why": "max 12 words"}]}
+did_well 1-2, do_instead 1-3, swaps 2-4, final_build 10-16 items in buy order: a corrected version of their build for this hero, role and lineup. Use exact item names from:
+${names}`;
+}
+
 function cleanPlan(p) {
   if (!p || typeof p !== "object") return null;
   const known = n => !!findItem(n), canon = n => findItem(n)?.name || n, arr = v => Array.isArray(v) ? v : [];
@@ -611,14 +634,45 @@ function cleanPlan(p) {
   };
   return plan.biggest_miss || plan.final_build.length ? plan : null;
 }
+// Find the coaching JSON in whatever was pasted: code fences, smart quotes, trailing commas and text around it are all fine.
 function parseJsonLoose(text) {
-  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/g);
+  const clean = String(text || "").replace(/[\u201C\u201D]/g, '"').replace(/[\u2018\u2019]/g, "'");
+  const tryParse = c => { try { return JSON.parse(c); } catch { try { return JSON.parse(c.replace(/,\s*([}\]])/g, "$1")); } catch { return null; } } };
   const candidates = [];
-  if (fence) for (const f of fence.reverse()) candidates.push(f.replace(/```(?:json)?/g, ""));
-  const a = text.indexOf("{"), b = text.lastIndexOf("}");
-  if (a >= 0 && b > a) candidates.push(text.slice(a, b + 1));
-  for (const c of candidates) { try { return JSON.parse(c); } catch {} }
+  for (const m of clean.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)) candidates.push(m[1]);
+  // every balanced {...} block, largest first
+  for (let i = clean.indexOf("{"); i >= 0 && candidates.length < 60; i = clean.indexOf("{", i + 1)) {
+    let depth = 0, inStr = false;
+    for (let j = i; j < clean.length; j++) {
+      const ch = clean[j];
+      if (inStr) { if (ch === "\\") j++; else if (ch === '"') inStr = false; continue; }
+      if (ch === '"') inStr = true; else if (ch === "{") depth++; else if (ch === "}" && --depth === 0) { candidates.push(clean.slice(i, j + 1)); break; }
+    }
+  }
+  candidates.sort((a, b) => b.length - a.length);
+  for (const c of candidates) { const v = tryParse(c.trim()); if (v && typeof v === "object" && (v.final_build || v.biggest_miss || v.swaps)) return v; }
   return null;
+}
+
+// Take a pasted / clipboard reply from claude.ai and show it on the match it belongs to.
+function acceptClaudeReply(text, { quiet } = {}) {
+  const raw = parseJsonLoose(text);
+  const plan = cleanPlan(raw);
+  if (!plan) { if (!quiet) $("#coachErr") && ($("#coachErr").textContent = "Couldn't find Claude's coaching in that text. Click the Copy button under Claude's reply, then paste again."); return false; }
+  const target = Number(raw.match_id) && state.history.some(m => m.match_id === Number(raw.match_id)) ? Number(raw.match_id) : state.matchId;
+  store.set(`dc:plan:${state.account}:${target}`, { plan, source: "plan", at: Date.now() });
+  state.claudePending = null;
+  if (target === state.matchId) { state.plan = plan; state.planSource = "plan"; state.coachKind = "plan"; state.shopViewPicked = false; state.shopTabPicked = false; renderCoach(); }
+  else { const m = state.history.find(x => x.match_id === target); if (m && m.mode !== state.mode) { state.mode = m.mode; renderLedger(); } selectMatch(target); }
+  return true;
+}
+
+async function checkClipboardForReply() {
+  if (!state.claudePending || document.visibilityState !== "visible") return;
+  try {
+    const text = await navigator.clipboard.readText();
+    if (text && text !== state.claudePending.prompt && acceptClaudeReply(text, { quiet: true })) return;
+  } catch { /* no clipboard permission: the Ctrl+V hint covers it */ }
 }
 function savePlan(plan, source) {
   state.plan = plan; state.planSource = source;
@@ -661,12 +715,23 @@ function renderCoach(waiting) {
   if (state.coachKind === "data") {
     controls = `<p class="muted cv-note">Built from the meta win rates for ${esc(state.game.hero)} against this exact enemy lineup and your lobby ranks. Instant and free.</p>`;
   } else if (state.coachKind === "plan") {
+    const prompt = claudeAiPrompt();
+    const url = "https://claude.ai/new?q=" + encodeURIComponent(prompt);
+    const prefilled = url.length <= 14000;
+    const waitingForClaude = state.claudePending?.matchId === state.matchId;
     controls = `<div class="askbox">
-      <p class="cv-note"><b>1.</b> Copy the coaching request (it includes this match's data). <b>2.</b> Paste it into a new Claude chat. <b>3.</b> Paste Claude's whole reply back here to see it as cards and tiles.</p>
-      <div class="actions"><button class="btn" type="button" id="copyPrompt">Copy coaching request</button><a class="btn ghost" href="https://claude.ai/new" target="_blank" rel="noopener">Open Claude</a></div>
-      <textarea id="promptText" class="ta" readonly hidden></textarea>
-      <textarea id="replyText" class="ta" placeholder="Paste Claude's reply here…" aria-label="Claude's reply"></textarea>
-      <div class="actions"><button class="btn ghost" type="button" id="usePaste">Show it</button></div></div>`;
+      <div class="actions"><a class="btn" id="askClaude" href="${prefilled ? esc(url) : "https://claude.ai/new"}" target="_blank" rel="noopener">${waitingForClaude ? "Ask Claude again" : "Coach with Claude"}</a></div>
+      <ol class="steps">
+        <li>Claude opens in a new tab${prefilled ? " with the request already typed in for you. Just press Enter to send it." : ". The request is on your clipboard: press Ctrl+V in the message box, then Enter."}</li>
+        <li>When Claude finishes, click the <b>Copy</b> button under its reply.</li>
+        <li>Come back to this tab. DeadCoach picks the reply up automatically${waitingForClaude ? "" : ""}. If your browser asks to see the clipboard, allow it, or press <b>Ctrl+V</b> anywhere on this page.</li>
+      </ol>
+      ${waitingForClaude ? `<div class="cv-wait"><span class="spin"></span><span>Waiting for Claude's reply…</span></div>` : ""}
+      <details class="manual"><summary>Paste the reply by hand instead</summary>
+        <textarea id="replyText" class="ta" placeholder="Paste Claude's reply here…" aria-label="Claude's reply"></textarea>
+        <div class="actions"><button class="btn ghost" type="button" id="usePaste">Show it</button><button class="btn ghost" type="button" id="copyPrompt">Copy the request again</button></div>
+        <textarea id="promptText" class="ta" readonly hidden></textarea>
+      </details></div>`;
   } else {
     controls = key
       ? `<div class="keyrow"><label for="modelSel" class="muted">Model</label><select id="modelSel">${CLAUDE_MODELS.map(([v, l]) => `<option value="${v}" ${v === (store.get("dc:model") || CLAUDE_MODELS[0][0]) ? "selected" : ""}>${l}</option>`).join("")}</select>
@@ -689,16 +754,18 @@ function renderCoach(waiting) {
     if (b.dataset.kind === "data") { state.plan = dataCoach(state.game, state.meta); state.planSource = "data"; store.del(`dc:plan:${state.account}:${state.matchId}`); }
     renderCoach();
   });
+  $("#askClaude")?.addEventListener("click", () => {
+    const prompt = claudeAiPrompt();
+    navigator.clipboard?.writeText(prompt).catch(() => {});   // also on the clipboard, in case the link can't pre-fill it
+    state.claudePending = { matchId: state.matchId, prompt, at: Date.now() };
+    setTimeout(() => renderCoach(), 300);
+  });
   $("#copyPrompt")?.addEventListener("click", async () => {
-    const text = fullPrompt();
+    const text = claudeAiPrompt();
     try { await navigator.clipboard.writeText(text); $("#copyPrompt").textContent = "Copied. Now paste it into Claude"; }
     catch { const t = $("#promptText"); t.hidden = false; t.value = text; t.select(); $("#copyPrompt").textContent = "Copy the selected text"; }
   });
-  $("#usePaste")?.addEventListener("click", () => {
-    const plan = cleanPlan(parseJsonLoose($("#replyText").value || ""));
-    if (!plan) { $("#coachErr").textContent = "Couldn't find the coaching JSON in that reply. Paste Claude's whole answer, including the part in braces."; return; }
-    savePlan(plan, "plan"); renderCoach();
-  });
+  $("#usePaste")?.addEventListener("click", () => acceptClaudeReply($("#replyText").value || ""));
   $("#keyForm")?.addEventListener("submit", e => { e.preventDefault(); const v = $("#keyInput").value.trim(); if (v) { store.set("dc:key", v); renderCoach(); } });
   $("#forgetKey")?.addEventListener("click", () => { store.del("dc:key"); renderCoach(); });
   $("#modelSel")?.addEventListener("change", e => store.set("dc:model", e.target.value));
@@ -787,6 +854,14 @@ function renderShop() {
 
 // ---------------------------------------------------------------- boot
 $("#searchForm").addEventListener("submit", e => { e.preventDefault(); findAndLoad($("#acctInput").value); });
+window.addEventListener("focus", checkClipboardForReply);
+document.addEventListener("visibilitychange", checkClipboardForReply);
+document.addEventListener("paste", e => {
+  const t = e.target;
+  if (t && (t.id === "acctInput" || t.id === "keyInput")) return;
+  const text = e.clipboardData?.getData("text") || "";
+  if (text.includes("final_build") || text.includes("biggest_miss")) { e.preventDefault(); acceptClaudeReply(text); }
+});
 
 (async () => {
   try { await loadStatic(); } catch { $("#ledger").innerHTML = `<div class="notice">Couldn't load the item list. Reload the page.</div>`; return; }
